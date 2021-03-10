@@ -3,24 +3,29 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
+using System.Text;
 using SP = Microsoft.SharePoint.Client;
 
 namespace SpLib
 {
     public class SharePointFolder : ISharepointList
     {
-        static readonly byte[] buffer = new byte[1024 * 16];
+        
         public static readonly string TagFileName = "FileLeafRef";
         public static readonly string TagUrl = "FileRef";
         public static readonly string TagComment = "_CheckinComment";
 
         readonly SP.ClientContext _context;
         readonly SP.Folder _folder;
-        internal SharePointFolder(SP.ClientContext context, SP.Folder folder)
+        readonly SharepointDocLibrary _lib;
+        internal SharePointFolder(SharepointDocLibrary lib, SP.Folder folder)
         {
-            _context = context;
+            _context = lib.Context;
             _folder = folder;
+            _lib = lib;
         }
+
         public ClientContext Context => _context;
 
         public string Url => _folder.ServerRelativeUrl;
@@ -58,58 +63,95 @@ namespace SpLib
                 _context.ExecuteQuery();
                 foreach (var f in _folder.Folders)
                 {
-                    spList.Add(new SharePointFolder(_context, f));
+                    spList.Add(new SharePointFolder(_lib, f));
                 }
                 return spList.ToArray();
             }
         }
 
-        public void FindFileOrFolder(string regex, bool recursiv, Action<SP.Folder> folderAction, Action<SP.File> fileAction)
+        public void FindFileOrFolder(StringHelper.FolderSnippet[] folderSnippets, int index, bool recursiv, Action<SP.Folder> folderAction, Action<SP.File> fileAction)
         {
-            _context.Load(_folder.Folders);
-            _context.Load(_folder.Files);
-            _context.ExecuteQuery();
-            var re = new System.Text.RegularExpressions.Regex(regex);
-            foreach(var file in _folder.Files)
+            SP.Folder folder = _folder;
+
+            if( index >= folderSnippets.Length - 1)
             {
-                if (re.IsMatch(file.Name))
+                index = folderSnippets.Length - 1; 
+                _context.Load(folder.Files); _context.ExecuteQuery();
+                var re = new Regex(folderSnippets[index].FolderPart);
+                foreach( var f in folder.Files.Where(x=> re.IsMatch(x.Name)))
                 {
-                    _context.Load(file);
-                    _context.ExecuteQuery();
-                    fileAction(file);
+                    fileAction(f);
+                }
+                _context.Load(folder.Folders); _context.ExecuteQuery();
+                    
+                foreach (var f in folder.Folders.Where(x => re.IsMatch(x.Name)))
+                {
+                    folderAction(f);
+
+                }
+                if( recursiv)
+                { 
+                    foreach( var f in folder.Folders)
+                    {
+                        var spFolder = new SharePointFolder(_lib, f);
+                        spFolder.FindFileOrFolder(folderSnippets, index + 1, recursiv, folderAction, fileAction);
+                    }
+                }
+                return;
+            }
+            
+
+            if( folderSnippets[index].UsesRegex)
+            {
+                var re = new Regex(folderSnippets[index].FolderPart);
+                _context.Load(folder.Folders);
+                _context.ExecuteQuery();
+                foreach( var f in folder.Folders)
+                {
+                    if (re.IsMatch(f.Name))
+                    {
+                        folder = f;
+                        var spFolder = new SharePointFolder(_lib, f);
+                        spFolder.FindFileOrFolder(folderSnippets, index + 1, recursiv, folderAction, fileAction);
+                    }
                 }
             }
-            foreach (var folder in _folder.Folders)
+            else 
             {
-                if( re.IsMatch(folder.Name))
+                var serverRelativeUrl = folder.ServerRelativeUrl+ "/" + folderSnippets[index].FolderPart;
+                folder = _context.Web.GetFolderByServerRelativeUrl(serverRelativeUrl);
+                try
                 {
                     _context.Load(folder);
                     _context.ExecuteQuery();
-                    folderAction(folder);
+                    var spFolder = new SharePointFolder(_lib, folder);
+                    spFolder.FindFileOrFolder(folderSnippets, index + 1, recursiv, folderAction, fileAction);
                 }
-                if (recursiv)
+                catch (Exception e)
                 {
-                    var spFolder = new SharePointFolder(_context, folder);
-                    spFolder.FindFileOrFolder(regex, recursiv, folderAction, fileAction);
+                    _lib.NotifyException(new DirectoryNotFoundException($"The folder <{serverRelativeUrl}> was not found!", e));
                 }
-            }
+            }                        
         }
 
         public SharePointFolder GetOrCreateSubfolder(string name)
         {
-            _context.Load(_folder.Folders);
+            //_folder.
+            var matchingFolders = _context.LoadQuery(_folder.Folders.Where(x=>x.Name==name));
             _context.ExecuteQuery();
-            foreach( var f in _folder.Folders)
+            //foreach( var f in _folder.Folders)
+            foreach( var f in matchingFolders )
             {
                 if( f.Name == name)
                 {
-                    return new SharePointFolder(_context, f);
+                    return new SharePointFolder(_lib, f);
                 }
             }
+            _context.Load(_folder.Folders);
             var newFolder = _folder.Folders.Add(name);
             _context.Load(newFolder);
             _context.ExecuteQuery();
-            return new SharePointFolder(_context, newFolder);
+            return new SharePointFolder(_lib, newFolder);
         }
 
         public void UploadDocument(string path)
@@ -157,56 +199,6 @@ namespace SpLib
             
         }
 
-        public void DownloadAllFiles(string targetDir)
-        {
-            _context.Load(_folder);
-            _context.ExecuteQuery();
-            _context.Load(_folder.Files);
-            _context.ExecuteQuery();
-            foreach (var f in _folder.Files)
-            {
-                DownloadDocument(targetDir, f);
-            }
-        }
-
-        public void DownloadDocument(string targetDir, string fileName)
-        {
-            _context.Load(_folder.Files);
-            _context.ExecuteQuery();
-            foreach (var f in _folder.Files)
-            {
-                if (f.Name == fileName)
-                {
-                    DownloadDocument(targetDir, f);
-                    break;
-                }
-            }
-        }
-
-        public void DownloadDocument(string targetDir, SP.File f)
-        {
-            //_context.Load(f);
-            //_context.ExecuteQuery();
-            var result = f.OpenBinaryStream();
-            _context.Load(f);
-            _context.ExecuteQuery();
-
-            var offset = 0;
-            List<string> pathComponents = new List<string>();
-            pathComponents.AddRange(targetDir.Trim('"','\'').Split('\\'));
-            pathComponents.AddRange(f.ServerRelativeUrl.Split('/').Skip(2)); // sites must not be in the path, it's the second element!
-            var fileName = string.Join("\\", pathComponents.ToArray());
-            SharepointDocLibrary.AssertValidPath(System.IO.Path.GetDirectoryName(fileName));
-            using (var stream = new FileStream(fileName, FileMode.OpenOrCreate))
-            {
-                var nrOfBytes = result.Value.Read(buffer, offset, buffer.Length);
-
-                while (nrOfBytes > 0)
-                {
-                    stream.Write(buffer, 0, nrOfBytes);
-                    nrOfBytes = result.Value.Read(buffer, offset, buffer.Length);
-                }
-            }
-        }
+        
     }
 }

@@ -11,28 +11,25 @@ namespace SpConsole
 {
     abstract class Options
     {
-        [Option('u', "user", HelpText = "User name of sharepoint repo")]
+        [Option('u', "user", HelpText = "User name of sharepoint repo.")]
         
         public string User { get; set; }
 
-        [Option( 'p', "password", HelpText ="Password of specified user")]
+        [Option( 'p', "password", HelpText ="Password of specified user.")]
         public string Password { get; set; }
 
         public abstract void Accept(IOptionVisitor visitor);
     }
 
-    [Verb("find", HelpText = "Find one or more Items item within the document library")]
+    [Verb("find", HelpText = "Find one or more Items item within the document library.")]
 
     class FindOptions: Options
     {
         [Option('s', "site", HelpText="List of sites that shall be searched.")]
         public IEnumerable<string> Sites { get; set; }
 
-        [Option('n', "name", HelpText ="Literal of regular search expression that shall match the name of the searched item")]
+        [Option('n', "name", Required=true, HelpText ="Literal of regular search expression that shall match the name of the searched item.")]
         public string Name { get; set; }
-
-        [Option("re", HelpText ="Search as regular expression", Default =false )]
-        public bool IsRegex { get; set; }
 
         [Option('r', HelpText = "Search recursive")]
         public bool Recursiv { get; set; }
@@ -61,10 +58,10 @@ namespace SpConsole
         [Option('s', "site", HelpText = "List of sites.")]
         public IEnumerable<string> Sites { get; set; }
 
-        [Option('f', "files", HelpText ="List of files that shall be loaded to sharepoint.")]
+        [Option('f', "files", Required =true, HelpText ="List of files that shall be loaded to sharepoint.")]
         public IEnumerable<string> Files { get; set; }
 
-        [Option('d', "dest", HelpText ="Destination folder where the files shall be pushed.")]
+        [Option('d', "dest", Required = true, HelpText ="Destination folder where the files shall be pushed.")]
         public string Destination { get; set; }
 
         [Option('c', "create", HelpText = "Flag to indicate that a missing folder shall be created", Default = false)]

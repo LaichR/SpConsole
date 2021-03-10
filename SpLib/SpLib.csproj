@@ -90,6 +90,7 @@
     <Compile Include="SharepointDocLibrary.cs" />
     <Compile Include="SharePointFolder.cs" />
     <Compile Include="SharepointListElement.cs" />
+    <Compile Include="StringHelper.cs" />
     <Compile Include="ViolatedContractException.cs" />
   </ItemGroup>
   <ItemGroup>

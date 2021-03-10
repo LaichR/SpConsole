@@ -1,0 +1,28 @@
+#usage examples and test cases for the Sp-Console app
+#****************************************************
+
+# search a folder that does not exist => expect an appropriate error message
+# the site OD is an alias that is configured in the configuration file of the SpConsole
+
+find -sOD -nDocuments/test/*.txt 
+
+# search all word documents in a specific folder
+find -sOD -nDocuments/M121/Prüfungen/*.docx
+
+# search all word documents recursively starting from a specific folder
+find -sOD -nDocuments/M121/Prüfungen/*.docx -r
+
+# search across several sites all submitted c-code files belonging to the assignement 'String-Addierer' of the students
+# the search expression to download these files would be the same (cmd pull, option --file -f)
+find -sINFA* -n'Student*/Work*/*/String-Addierer/*.c
+
+# upload a large file from the local directory strucure to one drive and create a new subfolder if needed
+push -sOD -f"C:\Users\rolfl\OneDrive - GIBZ\M121\Übungen\Rand1000001.txt" -dDocuments/test -c
+
+# download a large file from sharepoint to a local directory
+pull --site=OD -d'C:\temp\sharepoint' -fDocuments/test/Rand1000001.txt
+
+# download the submissions of the assignement 'Lift-Door' of the site INFWU
+# quoting the folder names is only required if the names contain whitespace characters
+
+pull -sINFWU -f'Student*/Submit*/*/Lift-Door' -d c:\temp\student_work

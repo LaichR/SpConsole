@@ -2,19 +2,63 @@
 using System.Linq;
 using System.Collections.Generic;
 using System.Text;
+using System.Text.RegularExpressions;
+using System.IO;
 using SP = Microsoft.SharePoint.Client;
+
 
 namespace SpLib
 {
     public class SharepointDocLibrary : ISharepointList
     {
-
+        static readonly byte[] _downloadBuffer = new byte[1024 * 16];
         readonly SP.ClientContext _context;
         readonly SP.List _me;
 
+        public EventHandler<Exception> OnException;
+
+        class DownloadStatus
+        {
+            readonly SortedSet<string> _downloadedFiles = new SortedSet<string>();
+            readonly SharepointDocLibrary _lib;
+
+            public DownloadStatus(SharepointDocLibrary library)
+            {
+                _lib = library;
+            }
+
+            public void DownloadAllFilesInFolder(string targetDir, SP.Folder folder, Action<SP.File> fileAction, int take = -1)
+            {
+                _lib._context.Load(folder.Files);
+                _lib._context.Load(folder.Folders);
+                _lib._context.ExecuteQuery();
+                foreach( var f in folder.Files )
+                {
+                    _lib._context.Load(f); _lib._context.ExecuteQuery();
+                    fileAction(f);
+                    DowloadDocument(targetDir, f, take);
+                }
+                foreach( var f in folder.Folders)
+                {
+                    DownloadAllFilesInFolder(targetDir, f, fileAction, take);
+                }
+            }
+
+            public void DowloadDocument( string targetDir, SP.File file, int take=-1)
+            {
+                var serverPath = file.ServerRelativeUrl;
+                if (!_downloadedFiles.Contains(serverPath))
+                {
+                    _downloadedFiles.Add(serverPath);
+                    _lib.DownloadDocument(targetDir, file, take);
+                }
+            }
+            
+        }
 
         public SharepointDocLibrary(string url, string docLibName, string user, string password)
         {
+            
             Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(user), "user must not be null", "user");
             Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(user), "password must not be null", "user");
 
@@ -125,9 +169,49 @@ namespace SpLib
             return listItems;
         }
 
+        public SharePointFolder GetFolder(string folderPath)
+        {
+            var folderSnipptets = StringHelper.SplitIntoFolderSnippets(folderPath);
+            return GetFolder(folderSnipptets);
+        }
+
+        public SharePointFolder GetFolder(StringHelper.FolderSnippet[] folders)
+        {
+            var folder = _context.Web.RootFolder;
+            if( folders.Any())
+            {
+                if( folders[0].UsesRegex )
+                {
+                    var re = new Regex(folders[0].FolderPart);
+                    _context.Load(folder.Folders);
+                    _context.ExecuteQuery();
+                    var matchingFolder = folder.Folders.Where(x => re.IsMatch(x.Name));
+                    if(!matchingFolder.Any()) 
+                        throw new System.IO.DirectoryNotFoundException($"No folder name is matching the regular expression{folders[0].FolderPart}");
+                    folder = matchingFolder.First();
+                }
+                else
+                {
+                    folder = _context.Web.GetFolderByServerRelativeUrl( folders[0].FolderPart );
+                    _context.Load(folder);
+                    try
+                    {
+                        _context.ExecuteQuery();
+                    }
+                    catch(Exception ex)
+                    {
+                        throw new System.IO.DirectoryNotFoundException(
+                            $"No folder with name {folders[0].FolderPart} found", ex);
+                    }
+
+                }
+            }
+            return new SharePointFolder(this, folder);
+        }
+
         public SharePointFolder GetOrCreateFolder(string folderPath)
         {
-            var folderNames = folderPath.Trim('"', '\'').Split('/');
+            var folderNames = StringHelper.Unquote(folderPath).Split('/'); // when we create new folders, we cannot deal with wildcards
             var firstName = "";
             if( folderNames.Any() )
             {
@@ -137,7 +221,8 @@ namespace SpLib
             try
             {
                 spFolder = GetFolder(firstName);
-            }catch(System.IO.DirectoryNotFoundException ex)
+            }
+            catch(System.IO.DirectoryNotFoundException)
             {
                 spFolder = CreateFolder("", firstName);
             }
@@ -156,66 +241,59 @@ namespace SpLib
             return folder;
         }
 
-        public SharePointFolder GetFolder(string folderPath)
+
+
+        public void DownloadFiles(string targetDir, int maxurlExt, string searchPath, bool recursiv, 
+            Action<SP.File> fileAction)
         {
-            bool FindFolder(SP.Folder root, string[] folderPathNames, out SP.Folder aFolder)
-            {
 
-                bool nameInPath = true;
+            var pathSnippets = StringHelper.SplitIntoFolderSnippets(searchPath);
 
-                for (int pos = 0; pos < folderPathNames.Length && nameInPath; pos++)
-                {
-                    aFolder = root;
-                    nameInPath = false;
-                    var folderCollection = root.Folders;
-                    _context.Load(root.Folders);
-                    _context.ExecuteQuery();
-                    foreach (var f in folderCollection)
-                    {
-                        if (folderPathNames[pos] == f.Name)
-                        {
-                            root = f;
-                            nameInPath = true;
-                            break;
-                        }
-                    }
-                }
-                aFolder = root;
-                return nameInPath;
-            }
-
-            if( string.IsNullOrEmpty(folderPath))
-            {
-                return new SharePointFolder(_context, _context.Web.RootFolder);
-            }
-
-            if (FindFolder(_context.Web.RootFolder, folderPath.Trim('"','\'').Split('/'), out SP.Folder folder))
-            {
-                return new SharePointFolder(_context, folder);
-            }
-            throw new System.IO.DirectoryNotFoundException($"Sharepoint Folder {folderPath} not found");
+            var folder = GetFolder(pathSnippets);
+            var status = new DownloadStatus(this);
+            folder.FindFileOrFolder(pathSnippets, 1, recursiv,
+                x => { status.DownloadAllFilesInFolder(targetDir, x, fileAction, maxurlExt); },
+                x => { fileAction(x); status.DowloadDocument(targetDir, x, maxurlExt);} );
         }
 
-        public void DownloadFolder(string targetDir, string folderPath, bool recursive)
+        public void DownloadDocument(string targetDir, SP.File f, int take = -1)
         {
-            var folder = GetFolder(folderPath);
-            DownloadFolder(targetDir, folder, recursive);
-            //_context.Load(folder.Directories);
-            //foreach
-        }
+            //_context.Load(f);
+            //_context.ExecuteQuery();
 
-        public void DownloadFolder(string targetDir, SharePointFolder folder, bool recursive)
-        {
+            var result = f.OpenBinaryStream();
+            _context.Load(f);
+            _context.ExecuteQuery();
 
-            folder.DownloadAllFiles(targetDir);
-            if (recursive)
+            var offset = 0;
+            List<string> pathComponents = new List<string>();
+            pathComponents.AddRange(targetDir.Trim('"', '\'').Split('\\'));
+            var serverRelativePath = f.ServerRelativeUrl.Split('/');
+            if (take == -1)
             {
-                foreach (var f in folder.Folders)
+                take = serverRelativePath.Length - 2;
+            }
+            pathComponents.AddRange(serverRelativePath.Skip(serverRelativePath.Length - take)); // sites must not be in the path, it's the second element!
+            var fileName = string.Join("\\", pathComponents.ToArray());
+            SharepointDocLibrary.AssertValidPath(System.IO.Path.GetDirectoryName(fileName));
+            using (var stream = new FileStream(fileName, FileMode.OpenOrCreate))
+            {
+                var nrOfBytes = result.Value.Read(_downloadBuffer, offset, _downloadBuffer.Length);
+
+                while (nrOfBytes > 0)
                 {
-                    DownloadFolder(targetDir, f, recursive);
+                    stream.Write(_downloadBuffer, 0, nrOfBytes);
+                    nrOfBytes = result.Value.Read(_downloadBuffer, offset, _downloadBuffer.Length);
                 }
             }
         }
+
+        //public void DownloadFolder(string targetDir, SharePointFolder folder, bool recursive)
+        //{
+
+        //    folder.DownloadAllFiles(targetDir, recursive, -1);
+
+        //}
 
         static public void AssertValidPath(string directoryName)
         {
@@ -224,6 +302,11 @@ namespace SpLib
             {
                 System.IO.Directory.CreateDirectory(directoryName);
             }
+        }
+
+        internal void NotifyException( Exception ex)
+        {
+            OnException?.Invoke(this, ex);
         }
 
     }

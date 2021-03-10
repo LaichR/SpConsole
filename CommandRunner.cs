@@ -12,6 +12,8 @@ namespace SpConsole
 {
     class CommandRunner: IOptionVisitor
     {
+
+        //class DownloadStatus
         const string DocumentLibTag = "DokumentLibrary";
         const string DefaultUserTag = "DefaultUser";
         const string DefaultSiteTag = "DefaultSite";
@@ -30,6 +32,7 @@ namespace SpConsole
             if (string.IsNullOrEmpty(_user)) throw new ArgumentException("A user needs to be specified!");
             _password = options.Password;
             _options = options;
+            
         }
 
         private CommandRunner(CommandRunner parent, object options)
@@ -42,6 +45,7 @@ namespace SpConsole
             {
                 throw new ArgumentException("no valid command options defined");
             }
+            
             _user = parent._user;
             _password = parent._password;
         }
@@ -53,88 +57,32 @@ namespace SpConsole
 
         public void Visit(FindOptions findOptions)
         {
-            bool InitSearch(string name, out string folders, out string expr)
-            {
-                folders = null; expr = null;
-                var nameParts = name.Trim('"', '\'').Split('/');
-                if (!nameParts.Any()) return false;
-                if (nameParts.Length > 1)
-                {
-
-                    folders = string.Join("/", nameParts.Take(nameParts.Length - 1));
-                }
-                expr = nameParts.Last();
-                var pos = 0; var wildcards = "*?".ToCharArray();
-                var index = expr.IndexOfAny(wildcards, pos);
-                List<int> wildcardPositions = new List<int>();
-                while ( index >= 0 )
-                {
-                    wildcardPositions.Add(index);
-                    pos = index + 1;
-                    index = expr.IndexOfAny(wildcards, pos);
-                }
-                if( wildcardPositions.Any()) // form a  valid regular expression
-                {
-                    pos = 0;
-                    StringBuilder sb = new StringBuilder();
-                    foreach( var wp in wildcardPositions)
-                    {
-                        while( pos < wp )
-                        {
-                            if( ".".Contains(expr[pos]))
-                            {
-                                sb.Append('\\');
-                            }
-                            sb.Append(expr[pos++]);
-                        }
-                        switch( expr[pos++])
-                        {
-                            case '*':
-                                
-                                
-                                if (wp + 1 < expr.Length)
-                                {
-                                    var followingChar = expr[wp + 1];
-                                    var escape = "";
-                                    if (".".Contains(followingChar))
-                                    {
-                                        escape = "\\";
-                                    }
-                                    var stopChar = $"{escape}{followingChar}";
-                                    sb.Append($"([^{stopChar}]*)");
-                                }
-                                else sb.Append("(.*)");
-                                break;
-                            case '?': sb.Append('.'); break;
-                            default: throw new NotSupportedException();
-                        }
-                    }
-                    while (pos < expr.Length)
-                    {
-                        if (".".Contains(expr[pos]))
-                        {
-                            sb.Append('\\');
-                        }
-                        sb.Append(expr[pos++]);
-                    }
-                    expr = sb.ToString();
-                }
-                return true;
-            }
-
+           
             var sites = GetSites(findOptions.Sites);
-            Contract.Requires<ArgumentException>(
-                InitSearch(findOptions.Name, out string initialFolder, out string searchExpression),
-                "invalid argument {0}", findOptions.Name);
+
+            var pathSnippets = StringHelper.SplitIntoFolderSnippets(findOptions.Name);
             
             foreach( var site in sites)
             {
                 var lib = new SharepointDocLibrary(site, DocumentLibrary, _user, _password);
+                try
+                {
+                    lib.OnException += CommandRunner_OnSharepointLibException;
 
-                var folder = lib.GetFolder(initialFolder);
-                folder.FindFileOrFolder(searchExpression, findOptions.Recursiv,
-                    (x) => Console.WriteLine($"Folder: {x.Name}"), (x) => Console.WriteLine($"File: {x.Name},\n\t url:{x.ServerRelativeUrl}"));
-               
+                    ExecuteAction(() =>
+                    {
+                        var folder = lib.GetFolder(pathSnippets);
+                        folder.FindFileOrFolder(pathSnippets, 1, findOptions.Recursiv,
+                            (x) => Console.WriteLine($"Folder: {x.Name}"),
+                            (x) => Console.WriteLine($"File: {x.Name},\n\t url:{x.ServerRelativeUrl}"));
+                    }, $"find {findOptions.Name}");
+
+                }
+                finally
+                {
+                    lib.OnException -= CommandRunner_OnSharepointLibException;
+                }
+
             }
         }
 
@@ -197,7 +145,7 @@ namespace SpConsole
             var lines = System.IO.File.ReadAllLines(fileName);
             foreach( var l in lines)
             {
-                if (l.StartsWith("#")) continue;
+                if (l.StartsWith("#") || string.IsNullOrEmpty(l) || string.IsNullOrEmpty(l.Trim())) continue;
                 string[] args = SplitLine(l);
 
                 var result = parser.ParseArguments<FindOptions, UploadOptions, DownloadOptions, ExecOptions>(args)
@@ -214,23 +162,26 @@ namespace SpConsole
             var sites = GetSites(downloadOptions.Sites);
             foreach (var s in sites)
             {
+                
+                var lib = new SharepointDocLibrary(s, DocumentLibrary, _user, _password);
                 try
                 {
-                    var lib = new SharepointDocLibrary(s, DocumentLibrary, _user, _password);
-                    
+                    lib.OnException += CommandRunner_OnSharepointLibException;
+
+                    var dest = downloadOptions.Destination.Replace($"${DefaultDowloadDestinationTag}",
+                            ConfigurationManager.AppSettings[DefaultDowloadDestinationTag]).Trim('"', '\'');
+
                     foreach (var dir in downloadOptions.Folders)
                     {
-                        var src = lib.GetFolder(dir);
-                        var dest = downloadOptions.Destination.Replace($"${DefaultDowloadDestinationTag}",
-                            ConfigurationManager.AppSettings[DefaultDowloadDestinationTag]).Trim('"','\'');
 
-                        ExecuteAction(()=> src.DownloadAllFiles(dest), $"download {dest}");
+                        ExecuteAction(() => lib.DownloadFiles(dest, -1, dir, false, (x)=> Console.Write($"\n-dowloading: {x.ServerRelativeUrl}")), 
+                            $"download to folder {dest}:");
                     }
+                    
                 }
-                catch (Exception e)
+                finally
                 {
-                    Console.WriteLine($"Error downloading files from {s}");
-                    Console.WriteLine(e.Message);
+                    lib.OnException -= CommandRunner_OnSharepointLibException;
                 }
             }
         }
@@ -244,24 +195,32 @@ namespace SpConsole
                 try
                 {
                     var lib = new SharepointDocLibrary(s, DocumentLibrary, _user, _password);
-                    SharePointFolder dest;
-                    if (uploadOptions.DoCreateMissingFolder)
+                    try
                     {
-                        dest = lib.GetOrCreateFolder(uploadOptions.Destination);
-                    }
-                    else
-                    {
-                        dest = lib.GetFolder(destination);
-                    }
-                    foreach (var src in uploadOptions.Files)
-                    {
-                        var fileName = src.Replace($"${DefaultUploadSourceTag}", ConfigurationManager.AppSettings[DefaultUploadSourceTag]).Trim('"','\'');
-                        if(!System.IO.File.Exists(fileName))
+                        lib.OnException += CommandRunner_OnSharepointLibException;
+                        SharePointFolder dest;
+                        if (uploadOptions.DoCreateMissingFolder)
                         {
-                            throw new System.IO.FileNotFoundException($"File {fileName} does not exisit");
+                            dest = lib.GetOrCreateFolder(uploadOptions.Destination);
                         }
-                        
-                        ExecuteAction(()=> dest.UploadDocument(fileName),$"Upload {fileName}");
+                        else
+                        {
+                            dest = lib.GetFolder(destination);
+                        }
+                        foreach (var src in uploadOptions.Files)
+                        {
+                            var fileName = src.Replace($"${DefaultUploadSourceTag}", ConfigurationManager.AppSettings[DefaultUploadSourceTag]).Trim('"', '\'');
+                            //TODO: allow wildcards in fileName! if( fileName.Contains('*'))
+                            if (!System.IO.File.Exists(fileName))
+                            {
+                                throw new System.IO.FileNotFoundException($"File {fileName} does not exisit");
+                            }
+
+                            ExecuteAction(() => dest.UploadDocument(fileName), $"Upload {fileName}");
+                        }
+                    }finally
+                    {
+                        lib.OnException -= CommandRunner_OnSharepointLibException;
                     }
                 }
                 catch( Exception e)
@@ -269,6 +228,7 @@ namespace SpConsole
                     Console.WriteLine($"Error uploading files to {s}");
                     Console.WriteLine(e.Message);
                 }
+                
             }
         }
 
@@ -329,7 +289,14 @@ namespace SpConsole
             };
             timer.Elapsed += CommandRunner_TimerElapsed;
             timer.Start();
-            action();
+            try
+            {
+                action();
+            }
+            catch(Exception e)
+            {
+                CommandRunner_OnSharepointLibException(null, e);
+            }
             timer.Stop();
             timer.Elapsed -= CommandRunner_TimerElapsed;
             Console.WriteLine();
@@ -339,6 +306,16 @@ namespace SpConsole
         private void CommandRunner_TimerElapsed(object sender, System.Timers.ElapsedEventArgs e)
         {
             Console.Write(".");
+        }
+
+        private void CommandRunner_OnSharepointLibException( object sender, Exception e)
+        {
+            Console.Write("\n error: ");
+            Console.WriteLine(e.Message);
+            if( e.InnerException != null)
+            {
+                Console.WriteLine($"\t{e.InnerException.GetType().FullName}: {e.InnerException.Message}");
+            }
         }
     }
 }
