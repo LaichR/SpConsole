@@ -10,8 +10,8 @@ namespace SpLib
     {
         public class FolderSnippet
         {
-            List<string> _snippets = new List<string>();
-            bool _usesRegex;
+            readonly List<string> _snippets = new List<string>();
+            readonly bool _usesRegex;
             
             public FolderSnippet(string first, bool usesRegex)
             {
