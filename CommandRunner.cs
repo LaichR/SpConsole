@@ -73,7 +73,7 @@ namespace SpConsole
                     {
                         var folder = lib.GetFolder(pathSnippets);
                         folder.FindFileOrFolder(pathSnippets, 1, findOptions.Recursiv,
-                            (x) => Console.WriteLine($"Folder: {x.Name}"),
+                            (x,y,z) => Console.WriteLine($"Folder: {x.Name}"),
                             (x) => Console.WriteLine($"File: {x.Name},\n\t url:{x.ServerRelativeUrl}"));
                     }, $"find {findOptions.Name}");
 
@@ -205,7 +205,7 @@ namespace SpConsole
                         }
                         else
                         {
-                            dest = lib.GetFolder(destination);
+                            dest = lib.FindFolder(destination);
                         }
                         foreach (var src in uploadOptions.Files)
                         {
