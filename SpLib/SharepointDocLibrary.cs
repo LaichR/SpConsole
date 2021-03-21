@@ -178,11 +178,13 @@ namespace SpLib
         public SharePointFolder GetFolder(StringHelper.FolderSnippet[] folders)
         {
             var folder = _context.Web.RootFolder;
+            
             if( folders.Any())
             {
                 if( folders[0].UsesRegex )
                 {
                     var re = new Regex(folders[0].FolderPart);
+                    
                     _context.Load(folder.Folders);
                     _context.ExecuteQuery();
                     var matchingFolder = folder.Folders.Where(x => re.IsMatch(x.Name));
@@ -192,7 +194,9 @@ namespace SpLib
                 }
                 else
                 {
-                    folder = _context.Web.GetFolderByServerRelativeUrl( folders[0].FolderPart );
+                    _context.Load(folder);
+                    _context.ExecuteQuery();
+                    folder = _context.Web.GetFolderByServerRelativeUrl( folder.ServerRelativeUrl + "/" + folders[0].FolderPart );
                     _context.Load(folder);
                     try
                     {
@@ -203,7 +207,6 @@ namespace SpLib
                         throw new System.IO.DirectoryNotFoundException(
                             $"No folder with name {folders[0].FolderPart} found", ex);
                     }
-
                 }
             }
             return new SharePointFolder(this, folder);
@@ -211,26 +214,20 @@ namespace SpLib
 
         public SharePointFolder GetOrCreateFolder(string folderPath)
         {
-            var folderNames = StringHelper.Unquote(folderPath).Split('/'); // when we create new folders, we cannot deal with wildcards
-            var firstName = "";
-            if( folderNames.Any() )
+            var pathSnippets = StringHelper.SplitIntoFolderSnippets(folderPath);
+            var folder = GetFolder(pathSnippets);
+            List<SP.Folder> path = new List<SP.Folder>() { folder.Folder };
+            folder.FindFileOrFolder(pathSnippets, 1, false,
+                (f, snippets, index) => { path.Add(f); },
+                x => { });
+
+            int j = path.Count;
+            var spFolder = new SharePointFolder(this, path.Last());
+            for(; j < pathSnippets.Length; j++)
             {
-                firstName = folderNames.First();
+                spFolder = spFolder.GetOrCreateSubfolder(pathSnippets[j].FolderPart);
             }
-            SharePointFolder spFolder;
-            try
-            {
-                spFolder = GetFolder(firstName);
-            }
-            catch(System.IO.DirectoryNotFoundException)
-            {
-                spFolder = CreateFolder("", firstName);
-            }
-            for(int i = 1; i< folderNames.Length; i++)
-            {
-                spFolder = spFolder.GetOrCreateSubfolder(folderNames[i]);
-            }
-            
+
             return spFolder;
         }
 
@@ -241,7 +238,21 @@ namespace SpLib
             return folder;
         }
 
+        public SharePointFolder FindFolder(string searchPath)
+        {
+            var pathSnippets = StringHelper.SplitIntoFolderSnippets(searchPath);
+            var folder = GetFolder(pathSnippets);
+            List<SP.Folder> path = new List<SP.Folder>();
+            folder.FindFileOrFolder(pathSnippets, 1, false,
+                (f, snippets, index) => { path.Add(f); },
+                x => {});
+            if (!path.Any())
+            {
+                throw new System.IO.DirectoryNotFoundException($"The folder {searchPath} was not found!");
+            }
 
+            return new SharePointFolder(this, path.Last());
+        }
 
         public void DownloadFiles(string targetDir, int maxurlExt, string searchPath, bool recursiv, 
             Action<SP.File> fileAction)
@@ -252,7 +263,13 @@ namespace SpLib
             var folder = GetFolder(pathSnippets);
             var status = new DownloadStatus(this);
             folder.FindFileOrFolder(pathSnippets, 1, recursiv,
-                x => { status.DownloadAllFilesInFolder(targetDir, x, fileAction, maxurlExt); },
+                (f,snipptes,index) =>
+                {
+                    if (index >= snipptes.Length - 1)
+                    {
+                        status.DownloadAllFilesInFolder(targetDir, f, fileAction, maxurlExt);
+                    }
+                },
                 x => { fileAction(x); status.DowloadDocument(targetDir, x, maxurlExt);} );
         }
 

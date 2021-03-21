@@ -28,6 +28,8 @@ namespace SpLib
 
         public ClientContext Context => _context;
 
+        public SP.Folder Folder => _folder;
+
         public string Url => _folder.ServerRelativeUrl;
 
         public string[] FileNames
@@ -69,7 +71,7 @@ namespace SpLib
             }
         }
 
-        public void FindFileOrFolder(StringHelper.FolderSnippet[] folderSnippets, int index, bool recursiv, Action<SP.Folder> folderAction, Action<SP.File> fileAction)
+        public void FindFileOrFolder(StringHelper.FolderSnippet[] folderSnippets, int index, bool recursiv, Action<SP.Folder, StringHelper.FolderSnippet[], int> folderAction, Action<SP.File> fileAction )
         {
             SP.Folder folder = _folder;
 
@@ -86,7 +88,7 @@ namespace SpLib
                     
                 foreach (var f in folder.Folders.Where(x => re.IsMatch(x.Name)))
                 {
-                    folderAction(f);
+                    folderAction(f, folderSnippets, index);
 
                 }
                 if( recursiv)
@@ -94,7 +96,7 @@ namespace SpLib
                     foreach( var f in folder.Folders)
                     {
                         var spFolder = new SharePointFolder(_lib, f);
-                        spFolder.FindFileOrFolder(folderSnippets, index + 1, recursiv, folderAction, fileAction);
+                        spFolder.FindFileOrFolder(folderSnippets, index + 1, recursiv, folderAction, fileAction );
                     }
                 }
                 return;
@@ -112,6 +114,7 @@ namespace SpLib
                     {
                         folder = f;
                         var spFolder = new SharePointFolder(_lib, f);
+                        folderAction(folder, folderSnippets, index);
                         spFolder.FindFileOrFolder(folderSnippets, index + 1, recursiv, folderAction, fileAction);
                     }
                 }
@@ -124,6 +127,7 @@ namespace SpLib
                 {
                     _context.Load(folder);
                     _context.ExecuteQuery();
+                    folderAction(folder, folderSnippets, index);
                     var spFolder = new SharePointFolder(_lib, folder);
                     spFolder.FindFileOrFolder(folderSnippets, index + 1, recursiv, folderAction, fileAction);
                 }
